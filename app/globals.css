@@ -1,0 +1,11 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Custom base styling matching spelling theme if required */
+body {
+  background-color: #020204;
+  color: #e0e0e0;
+  margin: 0;
+  padding: 0;
+}
