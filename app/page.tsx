@@ -251,8 +251,8 @@ export default function LandingPage() {
           }}
         >
           {isMockAuth
-            ? "SPRINT 1 — MOCK AUTH ACTIVE"
-            : "SPRINT 1 — SUPABASE AUTH ACTIVE"}
+            ? "SPRINT 2 — MOCK AUTH ACTIVE"
+            : "SPRINT 2 — SUPABASE AUTH ACTIVE"}
         </p>
       </form>
     </main>

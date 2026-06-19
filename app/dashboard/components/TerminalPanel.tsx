@@ -44,12 +44,18 @@ function lineColor(line: string, status: TerminalStatus): string {
 }
 
 export default function TerminalPanel({ output, status }: TerminalPanelProps) {
-  const bottomRef = useRef<HTMLDivElement>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
   const cfg = STATUS_CONFIG[status];
   const lines = output ? output.split("\n") : [];
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    const el = scrollContainerRef.current;
+    if (el) {
+      el.scrollTo({
+        top: el.scrollHeight,
+        behavior: "smooth",
+      });
+    }
   }, [output]);
 
   return (
@@ -109,6 +115,7 @@ export default function TerminalPanel({ output, status }: TerminalPanelProps) {
       </div>
 
       <div
+        ref={scrollContainerRef}
         style={{
           flex: 1,
           overflowY: "auto",
@@ -118,13 +125,13 @@ export default function TerminalPanel({ output, status }: TerminalPanelProps) {
         {lines.length === 0 ? (
           <p
             style={{
-              color: "#333355",
+              color: "#4c4f69",
               fontSize: 12,
               margin: 0,
               letterSpacing: "0.05em",
             }}
           >
-            ▶ Awaiting execution... press RUN_CODE to compile.
+            Awaiting execution... Press F5 or Ctrl+Enter to run.
           </p>
         ) : (
           lines.map((line, i) => (
@@ -145,7 +152,6 @@ export default function TerminalPanel({ output, status }: TerminalPanelProps) {
             </div>
           ))
         )}
-        <div ref={bottomRef} />
       </div>
     </div>
   );

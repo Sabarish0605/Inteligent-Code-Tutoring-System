@@ -1,35 +1,44 @@
 "use client";
 
 import dynamic from "next/dynamic";
+import { DEFAULT_JAVA_CODE } from "@/lib/constants";
+
+// Re-export so any legacy imports still work
+export { DEFAULT_JAVA_CODE };
 
 const MonacoEditor = dynamic(() => import("@monaco-editor/react"), {
   ssr: false,
 });
 
-export const DEFAULT_JAVA_CODE = `public class Main {
-    public static void main(String[] args) {
-        System.out.println("Hello from SPELL IDE!");
-        
-        // Try editing me and hitting RUN_CODE above
-        int sum = 0;
-        for (int i = 1; i <= 10; i++) {
-            sum += i;
-        }
-        System.out.println("Sum 1–10 = " + sum);
-    }
-}`;
+/** Map file extension → Monaco language id */
+export function getMonacoLanguage(filename: string): string {
+  if (filename.endsWith(".java")) return "java";
+  if (filename.endsWith(".md")) return "markdown";
+  if (filename.endsWith(".json")) return "json";
+  if (filename.endsWith(".js")) return "javascript";
+  if (filename.endsWith(".ts")) return "typescript";
+  if (filename.endsWith(".py")) return "python";
+  if (filename.endsWith(".txt")) return "plaintext";
+  return "plaintext";
+}
 
 interface EditorPanelProps {
   code: string;
   onChange: (value: string) => void;
+  /** Monaco language id — inferred from filename if omitted */
+  language?: string;
 }
 
-export default function EditorPanel({ code, onChange }: EditorPanelProps) {
+export default function EditorPanel({
+  code,
+  onChange,
+  language = "java",
+}: EditorPanelProps) {
   return (
     <div style={{ width: "100%", height: "100%", background: "#1d1c2b" }}>
       <MonacoEditor
         height="100%"
-        language="java"
+        language={language}
         value={code}
         theme="spell-dark"
         onChange={(val) => onChange(val ?? "")}
@@ -45,6 +54,7 @@ export default function EditorPanel({ code, onChange }: EditorPanelProps) {
           cursorBlinking: "phase",
           smoothScrolling: true,
           bracketPairColorization: { enabled: true },
+          wordWrap: language === "markdown" ? "on" : "off",
         }}
         beforeMount={(monaco) => {
           monaco.editor.defineTheme("spell-dark", {
@@ -77,6 +87,16 @@ export default function EditorPanel({ code, onChange }: EditorPanelProps) {
           monaco.editor.setTheme("spell-dark");
           editorInstance.getContainerDomNode().style.background = "#1d1c2b";
           editorInstance.focus();
+
+          // Bind Ctrl+Enter to trigger execution event
+          editorInstance.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => {
+            window.dispatchEvent(new CustomEvent("spell-run-code"));
+          });
+
+          // Bind F5 to trigger execution event
+          editorInstance.addCommand(monaco.KeyCode.F5, () => {
+            window.dispatchEvent(new CustomEvent("spell-run-code"));
+          });
         }}
       />
     </div>
