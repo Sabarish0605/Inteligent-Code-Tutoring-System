@@ -8,6 +8,8 @@ import { getMonacoLanguage } from "./components/EditorPanel";
 import { useVFSStore } from "@/lib/store/vfsStore";
 import { loadVFS, saveVFS } from "@/lib/supabaseVFS";
 import { supabase } from "@/lib/supabaseClient";
+import { runVfsAntiGravityTest } from "@/lib/vfsStressTest";
+import { parseJavaError } from "@/lib/telemetry";
 
 // Dynamic imports (SSR-safe)
 const EditorPanel = dynamic(() => import("./components/EditorPanel"), {
@@ -57,6 +59,10 @@ export default function DashboardPage() {
     activeFileId,
     isDirty,
     autoSaveEnabled,
+    consecutiveErrorCount,
+    isSocraticBulbVisible,
+    activeSocraticPhase,
+    lastErrorCategory,
     getActiveFile,
     getFileNodes,
     getOpenFiles,
@@ -65,6 +71,9 @@ export default function DashboardPage() {
     updateFileContent,
     loadNodes,
     markClean,
+    registerCompilationSuccess,
+    registerCompilationFailure,
+    setSocraticPhase,
   } = useVFSStore();
 
   const activeFile = getActiveFile();
@@ -80,14 +89,13 @@ export default function DashboardPage() {
   const [output, setOutput] = useState("");
   const [termStatus, setTermStatus] = useState<TerminalStatus>("idle");
   const [isRunning, setIsRunning] = useState(false);
+  const isRunningRef = useRef(false);
 
   // Mentor panel
   const [mentorInput, setMentorInput] = useState("");
-  const [consecutiveErrors, setConsecutiveErrors] = useState(0);
-  const [showLightbulb, setShowLightbulb] = useState(false);
   const [mentorRevealed, setMentorRevealed] = useState(false);
+  const [activeErrorExplanation, setActiveErrorExplanation] = useState<string | null>(null);
 
-  const errorStreakRef = useRef(0);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // ── On mount: resolve session then hydrate VFS ─────────────────────────────
@@ -108,7 +116,14 @@ export default function DashboardPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ── Debounced Supabase save ────────────────────────────────────────────────
+  useEffect(() => {
+    // Expose Anti-Gravity stress test to the browser console for QA validation
+    if (typeof window !== "undefined") {
+      (window as any).runVfsAntiGravityTest = runVfsAntiGravityTest;
+    }
+  }, []);
+
+  // ─── Backend Sync (Debounced Auto-Save) ────────────────────────────────────────────────
 
   useEffect(() => {
     if (!isDirty || !userId || !autoSaveEnabled) return;
@@ -133,9 +148,12 @@ export default function DashboardPage() {
   // ── Run code ──────────────────────────────────────────────────────────────
 
   const handleRunCode = useCallback(async () => {
+    if (isRunningRef.current) return;
+    
     const file = useVFSStore.getState().getActiveFile();
     if (!file) return;
 
+    isRunningRef.current = true;
     setIsRunning(true);
     setTermStatus("compiling");
     setOutput(`Compiling ${file.name} via Judge0 API...`);
@@ -151,33 +169,29 @@ export default function DashboardPage() {
           `Execution failed: ${result.status.description}`;
         setOutput(errorMsg);
         setTermStatus("error");
-        errorStreakRef.current += 1;
-        setConsecutiveErrors(errorStreakRef.current);
-        if (errorStreakRef.current >= 3) {
-          setShowLightbulb(true);
-          setMentorRevealed(true);
-        }
+        
+        const parsed = parseJavaError(errorMsg);
+        setActiveErrorExplanation(parsed.explanation);
+        registerCompilationFailure(parsed.category, errorMsg);
       } else {
         setOutput(result.stdout || "(no output)");
         setTermStatus("success");
-        errorStreakRef.current = 0;
-        setConsecutiveErrors(0);
+        registerCompilationSuccess();
+        setMentorRevealed(false);
       }
     } catch (err) {
-      setOutput(
-        `Network error: ${err instanceof Error ? err.message : String(err)}`
-      );
+      const errorStr = err instanceof Error ? err.message : String(err);
+      setOutput(`Network error: ${errorStr}`);
       setTermStatus("error");
-      errorStreakRef.current += 1;
-      setConsecutiveErrors(errorStreakRef.current);
-      if (errorStreakRef.current >= 3) {
-        setShowLightbulb(true);
-        setMentorRevealed(true);
-      }
+      
+      const parsed = parseJavaError(errorStr);
+      setActiveErrorExplanation(parsed.explanation);
+      registerCompilationFailure(parsed.category, errorStr);
     } finally {
+      isRunningRef.current = false;
       setIsRunning(false);
     }
-  }, []);
+  }, [registerCompilationFailure, registerCompilationSuccess]);
 
   // ── Keyboard shortcuts & Custom Events for Code Execution ──────────────────
   useEffect(() => {
@@ -274,6 +288,7 @@ export default function DashboardPage() {
           flexDirection: "column",
           zIndex: 1,
           overflow: "hidden",
+          pointerEvents: isRunning ? "none" : "auto",
         }}
       >
         {/* ── Menu bar ────────────────────────────────────────────────────── */}
@@ -445,31 +460,8 @@ export default function DashboardPage() {
               </div>
             </div>
 
-            {/* Explorer header */}
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                padding: "10px 14px 6px 14px",
-                fontSize: 11,
-                color: "#636682",
-                fontWeight: "bold",
-                letterSpacing: "0.05em",
-                flexShrink: 0,
-              }}
-            >
-              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                <FolderIcon />
-                <span>Explorer</span>
-              </div>
-              <span style={{ fontSize: 9, color: "#a78bfa", opacity: 0.6 }}>
-                SPRINT 2
-              </span>
-            </div>
-
             {/* react-arborist file tree */}
-            <div style={{ flex: 1, overflow: "hidden" }}>
+            <div style={{ flex: 1, overflow: "hidden", display: "flex", flexDirection: "column" }}>
               <FileTree />
             </div>
           </aside>
@@ -591,7 +583,7 @@ export default function DashboardPage() {
               <div
                 style={{ display: "flex", alignItems: "center", gap: 10 }}
               >
-                {showLightbulb && (
+                {isSocraticBulbVisible && (
                   <button
                     type="button"
                     onClick={handleLightbulbClick}
@@ -622,7 +614,7 @@ export default function DashboardPage() {
                   </button>
                 )}
 
-                {consecutiveErrors > 0 && consecutiveErrors < 3 && (
+                {consecutiveErrorCount > 0 && consecutiveErrorCount < 3 && (
                   <span
                     style={{
                       fontSize: 9,
@@ -630,7 +622,7 @@ export default function DashboardPage() {
                       opacity: 0.75,
                     }}
                   >
-                    ERR: {consecutiveErrors}/3
+                    ERR: {consecutiveErrorCount}/3
                   </span>
                 )}
 
@@ -759,8 +751,8 @@ export default function DashboardPage() {
               <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                 <span>
                   {activeFile
-                    ? `spell-java-lab › ${activeFile.name}`
-                    : "spell-java-lab"}
+                    ? `JAVAZZ › ${activeFile.name}`
+                    : "JAVAZZ"}
                 </span>
                 <span style={{ opacity: 0.5 }}>|</span>
                 <span style={{ color: "#a78bfa", fontSize: 8 }}>●</span>
@@ -857,13 +849,27 @@ export default function DashboardPage() {
                 minWidth: 280,
               }}
             >
-              {mentorRevealed && consecutiveErrors >= 3 && (
-                <MentorBubble text={SOCRATIC_NUDGE} isNudge />
+              {mentorRevealed && consecutiveErrorCount >= 3 && (
+                <MentorBubble text={lastErrorCategory === "UNKNOWN" ? "I noticed you're hitting a recurring Runtime Exception or complex error. Let's act like detectives and investigate." : SOCRATIC_NUDGE} isNudge />
               )}
-              <MentorBubble text="Hello! I'm your Socratic Mentor. I'll ask questions to help you think — not just give answers." />
-              {MENTOR_HINTS.map((hint, i) => (
-                <MentorBubble key={i} text={hint} isHint />
-              ))}
+              
+              {activeSocraticPhase >= 1 && (
+                <MentorBubble text={lastErrorCategory === "UNKNOWN" 
+                  ? "Think of a Runtime Exception like a postman arriving at an address only to find the house has vanished. Let's look at the map (the line number) to find out where the postman got lost." 
+                  : (activeErrorExplanation || "")} isHint />
+              )}
+
+              {activeSocraticPhase >= 2 && (
+                <MentorBubble text={lastErrorCategory === "UNKNOWN"
+                  ? "1. Locate the highest line in the error trace that references Main.java.\n2. Check what object or array is being accessed on that exact line."
+                  : "Look at the flow of your logic. Have you declared what you are using before accessing it? Check the sequence of your operations."} isHint />
+              )}
+
+              {activeSocraticPhase >= 3 && (
+                <MentorBubble text={lastErrorCategory === "UNKNOWN"
+                  ? "Ensure you initialize your data structures:\nType name = new Type(); // Verify initialization"
+                  : `Try to blueprint your code mentally:\nfor(initialization; condition; increment) {\n  // block\n}\nAlways explicitly define your bounds!`} isHint />
+              )}
             </div>
 
             {/* Quick actions */}
@@ -878,28 +884,66 @@ export default function DashboardPage() {
                 minWidth: 280,
               }}
             >
-              {["Explain my error", "Give a hint", "What's next?"].map(
-                (label) => (
-                  <button
-                    key={label}
-                    type="button"
-                    style={{
-                      padding: "8px 10px",
-                      background: "rgba(167,139,250,0.04)",
-                      border: "1px solid rgba(167,139,250,0.15)",
-                      borderRadius: 4,
-                      color: "#a78bfa",
-                      fontSize: 11,
-                      fontFamily: "inherit",
-                      letterSpacing: "0.05em",
-                      cursor: "pointer",
-                      textAlign: "left",
-                    }}
-                  >
-                    ⬡ {label}
-                  </button>
-                )
-              )}
+              <button
+                type="button"
+                onClick={() => setSocraticPhase(1)}
+                style={{
+                  padding: "8px 10px",
+                  background: activeSocraticPhase >= 1 ? "rgba(167,139,250,0.04)" : "transparent",
+                  border: "1px solid rgba(167,139,250,0.15)",
+                  borderRadius: 4,
+                  color: "#a78bfa",
+                  fontSize: 11,
+                  fontFamily: "inherit",
+                  letterSpacing: "0.05em",
+                  cursor: "pointer",
+                  textAlign: "left",
+                }}
+              >
+                ⬡ Phase 1: Analogy
+              </button>
+              
+              <button
+                type="button"
+                onClick={() => setSocraticPhase(2)}
+                disabled={activeSocraticPhase < 1}
+                style={{
+                  padding: "8px 10px",
+                  background: activeSocraticPhase >= 2 ? "rgba(167,139,250,0.04)" : "transparent",
+                  border: "1px solid rgba(167,139,250,0.15)",
+                  borderRadius: 4,
+                  color: activeSocraticPhase >= 1 ? "#a78bfa" : "#636682",
+                  fontSize: 11,
+                  fontFamily: "inherit",
+                  letterSpacing: "0.05em",
+                  cursor: activeSocraticPhase >= 1 ? "pointer" : "not-allowed",
+                  textAlign: "left",
+                  opacity: activeSocraticPhase >= 1 ? 1 : 0.5,
+                }}
+              >
+                ⬡ Phase 2: Logical Flow
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setSocraticPhase(3)}
+                disabled={activeSocraticPhase < 2}
+                style={{
+                  padding: "8px 10px",
+                  background: activeSocraticPhase >= 3 ? "rgba(167,139,250,0.04)" : "transparent",
+                  border: "1px solid rgba(167,139,250,0.15)",
+                  borderRadius: 4,
+                  color: activeSocraticPhase >= 2 ? "#a78bfa" : "#636682",
+                  fontSize: 11,
+                  fontFamily: "inherit",
+                  letterSpacing: "0.05em",
+                  cursor: activeSocraticPhase >= 2 ? "pointer" : "not-allowed",
+                  textAlign: "left",
+                  opacity: activeSocraticPhase >= 2 ? 1 : 0.5,
+                }}
+              >
+                ⬡ Phase 3: Template Blueprint
+              </button>
             </div>
 
             {/* Input */}
@@ -1043,6 +1087,7 @@ function MentorBubble({
         fontSize: 11,
         lineHeight: "17px",
         color: isNudge ? "#ffb300" : isHint ? "#a5a6c5" : "#99aabb",
+        whiteSpace: "pre-wrap",
       }}
     >
       {isNudge && (
@@ -1060,20 +1105,3 @@ function MentorBubble({
   );
 }
 
-function FolderIcon() {
-  return (
-    <svg
-      width="14"
-      height="14"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="#d4b255"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      style={{ flexShrink: 0 }}
-    >
-      <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-    </svg>
-  );
-}
